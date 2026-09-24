@@ -1,0 +1,4 @@
+{
+  "train": "data/train.h5",
+  "val": "data/val.h5"
+}
