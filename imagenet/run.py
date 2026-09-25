@@ -13,7 +13,7 @@ ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'frozen_source'))
 from imagenet_ddp_smoke_20260909 import GlobalAssignmentDM,TwoViews,seed_worker,prepare_ddp
 from imagenet_hdf5.dataset import ImageNetHDF5
-from inline_eval import evaluate
+from training_monitor import evaluate
 from optimizer_recipe import make_optimizer,learning_rate
 import exact_assignment
 from lars_wd_audit import audit_optimizer
@@ -106,7 +106,7 @@ def main():
     if a.validate:
         state=torch.load(a.validate/'latest.pt',map_location='cpu');ev=json.loads((a.validate/'evidence.json').read_text());done=json.loads((a.validate/'completion.json').read_text())
         assert done['status']=='ok' and done['smoke'] and state['smoke'] and finite(state) and ev['weights'] is None and ev['pretrained'] is False and state['optimizer'] and state['scaler']
-        assert ev['centers_sha256']==pol['centers_sha256'] and ev['evaluator_sha256']==hashlib.sha256((ROOT/'inline_eval.py').read_bytes()).hexdigest()
+        assert ev['centers_sha256']==pol['centers_sha256'] and ev['evaluator_sha256']==hashlib.sha256((ROOT/'training_monitor.py').read_bytes()).hexdigest()
         assert state['config']==vars(cfg) and ev['initial_parameters_sha256']==pol['initial_parameters_sha256']
         if cfg.fm_weight==0:
             assert done.get('endpoint_semantic_checks',0)==32
@@ -156,7 +156,7 @@ def main():
     if rank==0:
         a.output.mkdir(parents=True,exist_ok=False)
         (a.output/'lars_weight_decay_actual.json').write_text(json.dumps(audit_optimizer(opt,m,cfg),indent=2))
-        (a.output/'evidence.json').write_text(json.dumps(dict(policy=a.policy,config=vars(cfg),weights=None,pretrained=False,initial_parameters_sha256=initial,centers_sha256=pol['centers_sha256'],resume=resume_note,resume_audit=resume_audit,velocity_parameter_count=sum(p.numel() for p in m.v_net.parameters()),torch=torch.__version__,evaluator_sha256=hashlib.sha256((ROOT/'inline_eval.py').read_bytes()).hexdigest()),indent=2))
+        (a.output/'evidence.json').write_text(json.dumps(dict(policy=a.policy,config=vars(cfg),weights=None,pretrained=False,initial_parameters_sha256=initial,centers_sha256=pol['centers_sha256'],resume=resume_note,resume_audit=resume_audit,velocity_parameter_count=sum(p.numel() for p in m.v_net.parameters()),torch=torch.__version__,evaluator_sha256=hashlib.sha256((ROOT/'training_monitor.py').read_bytes()).hexdigest()),indent=2))
     dist.barrier()
     if not a.smoke:evaluate(m.model,paths['train'],paths['val'],a.output/('eval_e'+str(start_epoch)),start_epoch,workers=4,input_normalization=getattr(cfg,'input_normalization',True))
     ds=ImageNetHDF5(paths['train'],transform=TwoViews(cfg))

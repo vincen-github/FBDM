@@ -87,7 +87,7 @@ def code_hashes():
     root = Path(__file__).resolve().parent
     files = [Path(__file__).resolve()]
     files.append(root/'blur_equivalent_20260910.py')
-    files.append(root/'inline_eval.py')
+    files.append(root/'training_monitor.py')
     files.extend([root/'optimizer_recipe.py',root/'upstream_lars.py'])
     files.extend(p for p in (root/'imagenet_formal100_20260909.py', root/'imagenet_linear_eval_20260909.py') if p.exists())
     for folder in ('frozen_source', 'imagenet_hdf5'):
@@ -267,7 +267,7 @@ def main():
             checkpoint_sha256=hashlib.sha256((out / "smoke_checkpoint.pt").read_bytes()).hexdigest(),
             warning="Two subset smoke epochs only; not full-epoch benchmark or formal result"), indent=2))
     if args.test_inline_eval:
-        from inline_eval import evaluate
+        from training_monitor import evaluate
         assert args.val_manifest
         evaluate(model.model,args.manifest,args.val_manifest,out/'eval_gate',epoch=0,
                  workers=args.workers,per_class=4,probe_epochs=2)
