@@ -62,3 +62,34 @@ Use the files inside [imagenet/](imagenet/). Set the dataset manifest paths in `
 | [training_monitor.py](imagenet/training_monitor.py) | Intermediate subset evaluation during training. |
 | [full_linear_eval.py](imagenet/full_linear_eval.py) | Full ImageNet linear evaluation with a frozen backbone. |
 | [imagenet_hdf5/builder.py](imagenet/imagenet_hdf5/builder.py), [dataset.py](imagenet/imagenet_hdf5/dataset.py), [validator.py](imagenet/imagenet_hdf5/validator.py) | Build, read, and validate sharded HDF5 datasets and their JSON manifests. |
+
+### ImageNet checkpoint
+
+Download the [ResNet-50 FBDM checkpoint](https://github.com/vincen-github/FBDM/releases/download/imagenet-r50-align10-m5-e100/fbdm_imagenet_r50_align10_m5_e100.pt) from Releases. It contains the encoder, projection head, velocity network, reference targets, and training state. To extract frozen image features, use the encoder:
+
+```python
+import torch
+from torchvision import models, transforms
+
+checkpoint = torch.load("fbdm_imagenet_r50_align10_m5_e100.pt", map_location="cpu", weights_only=False)
+encoder = models.resnet50(weights=None)
+encoder.fc = torch.nn.Identity()
+encoder.load_state_dict(
+    {name.removeprefix("model."): value
+     for name, value in checkpoint["model"].items()
+     if name.startswith("model.")},
+    strict=True,
+)
+encoder.eval()
+
+preprocess = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+])
+
+with torch.no_grad():
+    features = encoder(preprocess(image).unsqueeze(0))
+```
+
+Here, `image` is a PIL image. This checkpoint's input pipeline uses tensors in `[0, 1]` without ImageNet mean/std normalization. For the complete evaluation pipeline, see [imagenet/full_linear_eval.py](imagenet/full_linear_eval.py).
