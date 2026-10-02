@@ -126,9 +126,9 @@
       "input_normalization": false,
       "kernel_size": 0.1,
       "knn": 5,
-      "lambda_param": 1.3,
+      "lambda_param": 10.0,
       "lambda_schedule": [
-        "0:1.3"
+        "0:10"
       ],
       "lambda_schedule_raw_epoch_semantics": true,
       "linear_probe_epochs": 500,
