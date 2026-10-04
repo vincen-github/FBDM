@@ -1,4 +1,4 @@
-"""Bounded e5 classification checks. Original sources and old checkpoints are immutable."""
+"""Distributed ImageNet FBDM training and validation."""
 import argparse,copy,hashlib,json,os,random,sys,time
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,7 +93,7 @@ def geom(m,views,rank,world):
     return records
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--policy',required=True);p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
+    p=argparse.ArgumentParser();p.add_argument('--policy',default='no_window_e100');p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
     a=p.parse_args();torch.set_num_threads(1)
     pol,cfg,centers=input_policy(a.policy)
     assert pol.get('from_scratch') is True and not pol.get('resume')
@@ -158,7 +158,7 @@ def main():
         (a.output/'lars_weight_decay_actual.json').write_text(json.dumps(audit_optimizer(opt,m,cfg),indent=2))
         (a.output/'evidence.json').write_text(json.dumps(dict(policy=a.policy,config=vars(cfg),weights=None,pretrained=False,initial_parameters_sha256=initial,centers_sha256=pol['centers_sha256'],resume=resume_note,resume_audit=resume_audit,velocity_parameter_count=sum(p.numel() for p in m.v_net.parameters()),torch=torch.__version__,evaluator_sha256=hashlib.sha256((ROOT/'training_monitor.py').read_bytes()).hexdigest()),indent=2))
     dist.barrier()
-    if not a.smoke:evaluate(m.model,paths['train'],paths['val'],a.output/('eval_e'+str(start_epoch)),start_epoch,workers=4,input_normalization=getattr(cfg,'input_normalization',True))
+    if not a.smoke and not pol.get('full_eval_only',False):evaluate(m.model,paths['train'],paths['val'],a.output/('eval_e'+str(start_epoch)),start_epoch,workers=4,input_normalization=getattr(cfg,'input_normalization',True))
     ds=ImageNetHDF5(paths['train'],transform=TwoViews(cfg))
     overflow_total=0;overflow_consecutive=0
     watched={n:p for n,p in m.named_parameters() if n in ['model.conv1.weight','head.0.weight','v_net.v.0.weight']}
@@ -220,9 +220,9 @@ def main():
             if epoch+1 in [5,10,20,50,100] and not a.smoke:os.link(a.output/'latest.pt',a.output/('e'+str(epoch+1)+'.pt'))
             (a.output/('epoch'+str(epoch+1)+'.json')).write_text(json.dumps(dict(epoch=epoch+1,steps=steps,seconds=seconds,loss=float(totals[0]),fm=float(totals[1]),alignment=float(totals[2]),geometry=gmetrics,assignment=m.assignment_stats()),indent=2))
         dist.barrier()
-        if not a.smoke:evaluate(m.model,paths['train'],paths['val'],a.output/('eval_e'+str(epoch+1)),epoch+1,workers=4,input_normalization=getattr(cfg,'input_normalization',True))
+        if not a.smoke and not pol.get('full_eval_only',False):evaluate(m.model,paths['train'],paths['val'],a.output/('eval_e'+str(epoch+1)),epoch+1,workers=4,input_normalization=getattr(cfg,'input_normalization',True))
         del loader,cached
-        if not a.smoke and cfg.fm_weight and epoch+1==5:
+        if not a.smoke and cfg.fm_weight and epoch+1==5 and not pol.get('force_full_100',False):
             stop_flag=torch.zeros((),device='cuda',dtype=torch.int32)
             if rank==0:
                 first=json.loads((a.output/'eval_e1/result.json').read_text())
