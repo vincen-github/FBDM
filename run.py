@@ -17,7 +17,6 @@ STORE_TRUE = {
     "eval_at_start",
     "eval_head",
     "gradient_centralization",
-    "lambda_schedule_raw_epoch_semantics",
     "normalize_assignment_consensus",
     "velocity_tangent_projection",
 }
@@ -27,6 +26,10 @@ SPECIAL = {"Kprime": "--Kprime", "T0": "--T0", "Tmult": "--Tmult"}
 def arguments(config: dict) -> list[str]:
     args: list[str] = []
     for key, value in config.items():
+        if key == "lambda_schedule_raw_epoch_semantics":
+            if value is not True:
+                raise ValueError("The scheduled launcher uses raw epoch indices")
+            continue
         if key == "add_bn":
             if not value:
                 args.append("--no-add-bn")

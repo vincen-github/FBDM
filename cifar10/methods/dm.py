@@ -13,6 +13,7 @@ from eval.sgd import eval_sgd
 from model import VelocityNet
 
 from .base import BaseMethod
+from .capacitated_assignment import solve_repeated_assignment
 from .utils import perturbation, repeated_center_pool
 
 
@@ -712,7 +713,9 @@ class DM(BaseMethod):
                     self.cfg.pool_extra_repeats,
                 )
                 score = consensus @ pool.T
-                _, columns = linear_sum_assignment((-score).cpu().numpy())
+                _, columns = solve_repeated_assignment(
+                    (-score).cpu().numpy(), self.centers.shape[0],
+                )
                 columns = torch.as_tensor(columns, device=z0_1.device, dtype=torch.long)
                 center_ids = columns.remainder(self.centers.shape[0])
                 center = pool[columns]
@@ -727,7 +730,9 @@ class DM(BaseMethod):
                     self.cfg.pool_extra_repeats,
                 )
                 score = joint_consensus @ pool.T
-                _, columns = linear_sum_assignment((-score).cpu().numpy())
+                _, columns = solve_repeated_assignment(
+                    (-score).cpu().numpy(), self.centers.shape[0],
+                )
                 columns = torch.as_tensor(columns, device=z0_1.device, dtype=torch.long)
                 joint_center_ids = columns.remainder(self.centers.shape[0])
 

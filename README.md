@@ -2,6 +2,8 @@
 
 Self-supervised visual representation learning with reference-target assignment and flow matching.
 
+Install the Python dependencies with `pip install -r requirements.txt`.
+
 ## Repository structure
 
 ```text
@@ -37,11 +39,14 @@ Each dataset directory uses the following layout:
 | `train.py` | Training loop, evaluation, and checkpoint saving. |
 | `model.py` | Backbone, projection head, and velocity network. |
 | `methods/dm.py` | Target assignment, flow-matching objective, and alignment loss. |
+| `methods/capacitated_assignment.py` | Exact capacity-constrained matching without duplicated center nodes. |
 | `methods/utils.py`, `methods/utils_etf_reference.py` | Reference-target construction utilities. |
 | `datasets/` | Dataset loading and image augmentations. |
 | `eval/get_data.py` | Feature extraction for evaluation. |
 | `eval/sgd.py`, `eval/knn.py` | Linear classification and nearest-neighbor evaluation. |
 | `instrumentation.py` | Training diagnostics and logging. |
+
+Each dataset keeps its own model and training recipe. Data loading defaults to eight workers; adjust `num_workers` in `config.json` for the available CPU cores. Matching retains the original costs and capacity constraints; tied optima may select different equally optimal targets.
 
 ## ImageNet
 
@@ -56,12 +61,15 @@ Use the files inside [imagenet/](imagenet/). Set the dataset manifest paths in `
 | [imagenet_ddp_smoke_20260909.py](imagenet/imagenet_ddp_smoke_20260909.py) | Distributed model setup and training-view construction. |
 | [logical_assignment_batch.py](imagenet/logical_assignment_batch.py) | Target planning over a matching window spanning multiple physical batches. |
 | [certified_assignment.py](imagenet/certified_assignment.py), [capacitated_exact_assignment.py](imagenet/capacitated_exact_assignment.py), [exact_assignment.py](imagenet/exact_assignment.py) | Capacity-constrained matching and solver validation. |
+| [assignment_legacy_reference.py](imagenet/assignment_legacy_reference.py) | Full capacitated solver used by screening fallback and validation. |
 | [optimizer_recipe.py](imagenet/optimizer_recipe.py), [upstream_lars.py](imagenet/upstream_lars.py) | Optimizer construction and learning-rate scheduling. |
 | [velocity_constraints.py](imagenet/velocity_constraints.py) | Velocity constraints, energy regularization, and transport diagnostics. |
 | [amp_overflow_guard.py](imagenet/amp_overflow_guard.py), [lars_wd_audit.py](imagenet/lars_wd_audit.py), [diagnostic_adapters.py](imagenet/diagnostic_adapters.py) | Numerical safety and training checks. |
 | [training_monitor.py](imagenet/training_monitor.py) | Intermediate subset evaluation during training. |
 | [full_linear_eval.py](imagenet/full_linear_eval.py) | Full ImageNet linear evaluation with a frozen backbone. |
 | [imagenet_hdf5/builder.py](imagenet/imagenet_hdf5/builder.py), [dataset.py](imagenet/imagenet_hdf5/dataset.py), [validator.py](imagenet/imagenet_hdf5/validator.py) | Build, read, and validate sharded HDF5 datasets and their JSON manifests. |
+
+ImageNet's `num_workers` setting in `policies.json` is applied per GPU process; the default is eight workers per process.
 
 ### ImageNet checkpoint
 

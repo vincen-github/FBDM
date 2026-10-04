@@ -166,7 +166,7 @@ def main():
     for epoch in range(start_epoch,start_epoch+2 if a.smoke else start_epoch+formal_epochs):
         seed=1000+rank+10000*epoch;torch.manual_seed(seed);random.seed(seed);np.random.seed(seed)
         sampler=DistributedSampler(ds,num_replicas=world,rank=rank,shuffle=True,seed=0);sampler.set_epoch(epoch)
-        loader=DataLoader(ds,sampler=sampler,batch_size=128,num_workers=4,pin_memory=True,drop_last=True,worker_init_fn=seed_worker,generator=torch.Generator().manual_seed(seed))
+        loader=DataLoader(ds,sampler=sampler,batch_size=128,num_workers=int(cfg.num_workers),pin_memory=True,drop_last=True,worker_init_fn=seed_worker,generator=torch.Generator().manual_seed(seed))
         assert len(loader)==2502;m.reset_epoch_stats(len(loader));m.train()
         steps=16 if a.smoke else 2502;totals=torch.zeros(3,device='cuda');begin=time.perf_counter();cached=None
         for step,(views,_) in enumerate(logical_batches(loader,m,getattr(cfg,'logical_assignment_batches',1),steps)):

@@ -1,0 +1,8 @@
+numpy<2
+scipy
+POT==0.9.4
+torch
+torchvision
+Pillow
+h5py
+tqdm

@@ -138,7 +138,7 @@
       "method": "dm",
       "normalize_assignment_consensus": true,
       "num_samples": 2,
-      "num_workers": 4,
+      "num_workers": 8,
       "optimizer_name": "lars",
       "path_geometry": "spherical",
       "pool_extra_repeats": 4,

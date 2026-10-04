@@ -124,7 +124,7 @@
   "method": "dm",
   "normalize_assignment_consensus": true,
   "num_samples": 2,
-  "num_workers": 4,
+  "num_workers": 8,
   "optimizer_name": "adam",
   "path_geometry": "spherical",
   "pool_extra_repeats": 0,
