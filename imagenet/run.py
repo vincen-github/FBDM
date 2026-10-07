@@ -93,7 +93,7 @@ def geom(m,views,rank,world):
     return records
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--policy',default='energy20_e100');p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
+    p=argparse.ArgumentParser();p.add_argument('--policy',default='no_window_e100');p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
     a=p.parse_args();torch.set_num_threads(1)
     pol,cfg,centers=input_policy(a.policy)
     assert pol.get('from_scratch') is True and not pol.get('resume')
