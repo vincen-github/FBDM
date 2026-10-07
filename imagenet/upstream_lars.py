@@ -58,12 +58,12 @@ class LARS(object):
                     if weight_decay != 0:
                         p.grad.data += weight_decay * p.data
 
-                    param_norm = torch.norm(p.data)
-                    grad_norm = torch.norm(p.grad.data)
                     adaptive_lr = 1.
-
-                    if param_norm != 0 and grad_norm != 0 and group['layer_adaptation']:
-                        adaptive_lr = self.trust_coefficient * param_norm / grad_norm
+                    if group['layer_adaptation']:
+                        param_norm = torch.norm(p.data)
+                        grad_norm = torch.norm(p.grad.data)
+                        if param_norm != 0 and grad_norm != 0:
+                            adaptive_lr = self.trust_coefficient * param_norm / grad_norm
 
                     p.grad.data *= adaptive_lr
 

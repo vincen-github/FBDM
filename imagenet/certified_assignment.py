@@ -49,11 +49,13 @@ def _restricted(base, active, cap):
 def _certificate(base, active, u, v):
     full_v = np.zeros(base.shape[1], dtype=np.float64)
     full_v[active] = v
-    reduced_min = np.empty(base.shape[1], dtype=np.float64)
-    for start in range(0, base.shape[1], 128):
-        end = min(start+128, base.shape[1])
-        block = np.asarray(base[:, start:end], dtype=np.float64)
-        reduced_min[start:end] = (block-u[:, None]-full_v[None, start:end]).min(axis=0)
+    reduced_min = np.full(base.shape[1], np.inf, dtype=np.float64)
+    for start in range(0, base.shape[0], 256):
+        end = min(start+256, base.shape[0])
+        block = np.array(base[start:end], dtype=np.float64, order='C', copy=True)
+        block -= u[start:end, None]
+        block -= full_v[None, :]
+        np.minimum(reduced_min, block.min(axis=0), out=reduced_min)
     return reduced_min
 
 

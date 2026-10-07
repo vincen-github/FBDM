@@ -93,7 +93,7 @@ def geom(m,views,rank,world):
     return records
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--policy',default='no_window_e100');p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
+    p=argparse.ArgumentParser();p.add_argument('--policy',default='energy20_e100');p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
     a=p.parse_args();torch.set_num_threads(1)
     pol,cfg,centers=input_policy(a.policy)
     assert pol.get('from_scratch') is True and not pol.get('resume')
@@ -181,11 +181,11 @@ def main():
                 cfg.fm_weight=1.3*alpha;cfg.endpoint_weight=1.3*(1-alpha)
             opt.zero_grad(set_to_none=True)
             velocity_norm=[]
-            hook=m.v_net.register_forward_hook(lambda module,inputs,output: velocity_norm.append(float(output.detach().float().norm(dim=1).mean())))
+            hook=m.v_net.register_forward_hook(lambda module,inputs,output: velocity_norm.append(float(output.detach().float().norm(dim=1).mean()))) if diagnostic else None
             try:
                 with torch.autocast('cuda'):loss=checked_forward(m,ddp,views,cfg,a.smoke)
             finally:
-                hook.remove()
+                if hook is not None:hook.remove()
             assert_loss_semantics(m,cfg,loss)
             scaler.scale(loss).backward();scaler.unscale_(opt)
             grads={n:float(p.grad.norm()) if p.grad is not None and bool(torch.isfinite(p.grad).all()) else None for n,p in watched.items()} if diagnostic else {}

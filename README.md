@@ -52,22 +52,22 @@ Each dataset keeps its own model and training recipe. Data loading defaults to e
 
 Use the files inside [imagenet/](imagenet/). Set the dataset manifest paths in `paths.json` and select the training configuration from `policies.json`. The included training runner uses four CUDA GPUs; the full linear evaluator runs separately on a frozen backbone checkpoint.
 
-The default `no_window_e100` policy trains for 100 epochs and assigns targets within each physical batch of 512 images, pooled across four GPUs. It keeps target matching and flow matching, without accumulating multiple batches into an assignment window. Matching capacity stays at five throughout training. Run from the `imagenet/` directory:
+The default `energy20_e100` policy trains for 100 epochs with a 4096-image assignment window spanning eight physical batches of 512 images, pooled across four GPUs. Matching capacity stays at five. Targets are planned once per window, and the optimizer updates after each physical batch. Run from the `imagenet/` directory:
 
 ```bash
-python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --output runs/no_window
+python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --output runs/window4096
 ```
 
-The optional `energy20_e100` policy uses a 4096-image assignment window, spanning eight physical batches:
+The optional `no_window_e100` policy assigns targets independently within each physical batch:
 
 ```bash
-python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --policy energy20_e100 --output runs/window4096
+python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --policy no_window_e100 --output runs/no_window
 ```
 
-The default policy saves checkpoints and runs evaluation separately, using the complete training and validation splits:
+After training, use the full linear evaluator on a saved checkpoint with the complete training and validation splits:
 
 ```bash
-python full_linear_eval.py --checkpoint runs/no_window/e100.pt --train-manifest /path/to/train.manifest.json --val-manifest /path/to/val.manifest.json --output runs/no_window_linear
+python full_linear_eval.py --checkpoint runs/window4096/e100.pt --train-manifest /path/to/train.manifest.json --val-manifest /path/to/val.manifest.json --output runs/window4096_linear
 ```
 
 | File or directory | Function |
@@ -77,7 +77,7 @@ python full_linear_eval.py --checkpoint runs/no_window/e100.pt --train-manifest 
 | [artifacts/](imagenet/artifacts/) | Fixed reference-target tensor. |
 | [frozen_source/](imagenet/frozen_source/) | Backbone, projection head, velocity network, and FBDM objective used by the runner. |
 | [imagenet_ddp_smoke_20260909.py](imagenet/imagenet_ddp_smoke_20260909.py) | Distributed model setup and training-view construction. |
-| [logical_assignment_batch.py](imagenet/logical_assignment_batch.py) | Optional target planning across multiple batches; bypassed by the default single-batch policy. |
+| [logical_assignment_batch.py](imagenet/logical_assignment_batch.py) | Target planning across multiple batches, followed by physical-batch training. |
 | [certified_assignment.py](imagenet/certified_assignment.py), [capacitated_exact_assignment.py](imagenet/capacitated_exact_assignment.py), [exact_assignment.py](imagenet/exact_assignment.py) | Capacity-constrained matching and solver validation. |
 | [assignment_legacy_reference.py](imagenet/assignment_legacy_reference.py) | Full capacitated solver used by screening fallback and validation. |
 | [optimizer_recipe.py](imagenet/optimizer_recipe.py), [upstream_lars.py](imagenet/upstream_lars.py) | Optimizer construction and learning-rate scheduling. |
@@ -93,7 +93,7 @@ ImageNet's `num_workers` setting in `policies.json` is applied per GPU process; 
 
 Download the [ResNet-50 FBDM checkpoint](https://github.com/vincen-github/FBDM/releases/download/imagenet-r50-align10-m5-e100/fbdm_imagenet_r50_align10_m5_e100.pt) from Releases. It contains the encoder, projection head, velocity network, reference targets, and training state.
 
-This existing release checkpoint corresponds to the windowed policy. Training with the default policy creates a separate checkpoint.
+This release checkpoint corresponds to the default windowed policy.
 
 To extract frozen image features, use the encoder:
 
