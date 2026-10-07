@@ -123,3 +123,6 @@ with torch.no_grad():
 ```
 
 Here, `image` is a PIL image. This checkpoint's input pipeline uses tensors in `[0, 1]` without ImageNet mean/std normalization. For the complete evaluation pipeline, see [imagenet/full_linear_eval.py](imagenet/full_linear_eval.py).
+
+
+ImageNet training defaults to `no_window_e100`, which assigns reference targets within each global mini-batch and updates the model once per batch, without a cross-batch assignment window. Configure the dataset manifests in `imagenet/paths.json`, then run `python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --output runs/no_window` from the `imagenet/` directory. Use `full_linear_eval.py` for full ImageNet linear evaluation of the frozen backbone checkpoint. Even with this change, the model still achieves 60.01% linear probe accuracy. 
