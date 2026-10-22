@@ -87,7 +87,7 @@ python full_linear_eval.py --checkpoint runs/no_window/e100.pt --train-manifest 
 | [full_linear_eval.py](imagenet/full_linear_eval.py) | Full ImageNet linear evaluation with a frozen backbone. |
 | [imagenet_hdf5/builder.py](imagenet/imagenet_hdf5/builder.py), [dataset.py](imagenet/imagenet_hdf5/dataset.py), [validator.py](imagenet/imagenet_hdf5/validator.py) | Build, read, and validate sharded HDF5 datasets and their JSON manifests. |
 
-ImageNet's `num_workers` setting in `policies.json` is applied per GPU process; the default is eight workers per process.
+ImageNet's `num_workers` setting in `policies.json` is applied per GPU process; the default `no_window_e100` policy uses four workers per process.
 
 ### ImageNet checkpoint
 
@@ -125,4 +125,18 @@ with torch.no_grad():
 Here, `image` is a PIL image. This checkpoint's input pipeline uses tensors in `[0, 1]` without ImageNet mean/std normalization. For the complete evaluation pipeline, see [imagenet/full_linear_eval.py](imagenet/full_linear_eval.py).
 
 
-ImageNet training defaults to `no_window_e100`, which assigns reference targets within each global mini-batch and updates the model once per batch, without a cross-batch assignment window. Configure the dataset manifests in `imagenet/paths.json`, then run `python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --output runs/no_window` from the `imagenet/` directory. Use `full_linear_eval.py` for full ImageNet linear evaluation of the frozen backbone checkpoint. Even with this change, the model still achieves 60.01% linear probe accuracy. 
+### No-window ImageNet checkpoint
+
+ImageNet training defaults to `no_window_e100`, which assigns reference targets within each global mini-batch and updates the model once per batch, without a cross-batch assignment window. Configure the dataset manifests in `imagenet/paths.json`, then run `python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --output runs/no_window` from the `imagenet/` directory. Use `full_linear_eval.py` for full ImageNet linear evaluation of the frozen backbone checkpoint.
+
+Download the [no-window ResNet-50 FBDM checkpoint](https://github.com/vincen-github/FBDM/releases/download/imagenet-r50-nowindow-beta25-time025-e100/fbdm_imagenet_r50_nowindow_beta25_time025_e100.pt). It achieves **60.178% linear probe accuracy** with full ImageNet linear evaluation: 100 pretraining epochs, a frozen backbone, and 500 linear-classifier epochs (seed 0).
+
+The corresponding `no_window_e100` recipe uses rational time mapping (`time_map="frontload_rational"`, `time_map_param=0.25`), energy coefficient `velocity_energy_beta=25`, crop scale `[0.2, 1.0]`, alignment weight 10, and FM weight 1.3. The global batch size is 512, the reference contains 4096 centers, and matching capacity stays at five. The complete training configuration is stored in `checkpoint["config"]`.
+
+Use the encoder-loading example above with the downloaded filename:
+
+```python
+checkpoint = torch.load("fbdm_imagenet_r50_nowindow_beta25_time025_e100.pt", map_location="cpu", weights_only=False)
+```
+
+Input preprocessing remains `Resize(256)`, `CenterCrop(224)`, and `ToTensor()`, without ImageNet mean/std normalization.
