@@ -101,4 +101,5 @@ class VelocityNet(nn.Module):
     def forward(self, z, t):
         if self.time_feature_mode == "centered":
             t = 2.0 * t - 1.0
-        return self.v(torch.cat([z, t], dim=-1))
+        with torch.autocast(device_type=z.device.type, enabled=False):
+            return self.v(torch.cat([z.float(), t.float()], dim=-1))

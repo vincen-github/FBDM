@@ -11,16 +11,14 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader,DistributedSampler
 ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'frozen_source'))
-from imagenet_ddp_smoke_20260909 import GlobalAssignmentDM,TwoViews,seed_worker,prepare_ddp
+from training_common import GlobalAssignmentDM,TwoViews,seed_worker,prepare_ddp
 from imagenet_hdf5.dataset import ImageNetHDF5
 from training_monitor import evaluate
 from optimizer_recipe import make_optimizer,learning_rate
 import exact_assignment
 from lars_wd_audit import audit_optimizer
-from velocity_constraints import validate as validate_constraints, transport_probe
-from diagnostic_adapters import make_diagnostic_optimizer,assert_smoke_updates,assert_loss_semantics,checked_forward
+from diagnostic_adapters import make_diagnostic_optimizer,assert_smoke_updates,assert_loss_semantics
 import certified_assignment as capacitated_exact_assignment
-from logical_assignment_batch import install_preassigned_assignment, logical_batches
 
 def file_sha(path):
     h=hashlib.sha256()
@@ -55,7 +53,8 @@ def build(cfg,centers):
         m.head[-1].bias.requires_grad_(False)
     if cfg.fm_weight==0:
         for parameter in m.v_net.parameters():parameter.requires_grad_(False)
-    validate_constraints(m,cfg)
+    assert cfg.velocity_layers == 20 and cfg.pool_extra_repeats == 4
+    assert cfg.assignment_queue_size == 0 and not cfg.assignment_epoch_global
     return m
 
 def input_policy(name):
@@ -93,8 +92,9 @@ def geom(m,views,rank,world):
     return records
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--policy',default='no_window_e100');p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
+    p=argparse.ArgumentParser();p.add_argument('--policy',default='imagenet');p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
     a=p.parse_args();torch.set_num_threads(1)
+    if not (a.audit or a.validate) and a.output is None:p.error('--output is required for training')
     pol,cfg,centers=input_policy(a.policy)
     assert pol.get('from_scratch') is True and not pol.get('resume')
     assert cfg.init_mode=='random'
@@ -124,39 +124,13 @@ def main():
     rank=int(os.environ['RANK']);world=int(os.environ['WORLD_SIZE']);local=int(os.environ['LOCAL_RANK']);assert world==4 and cfg.bs==512
     torch.cuda.set_device(local);dist.init_process_group('nccl',timeout=timedelta(hours=1));torch.backends.cudnn.benchmark=True
     m=torch.nn.SyncBatchNorm.convert_sync_batchnorm(m).cuda(local).train()
-    opt=optimizer(m,cfg);start_epoch=0;resume_note=None;resume_audit=None
-    if pol.get('resume'):
-        assert file_sha(Path(pol['resume']))==pol['resume_sha256']
-        ck=torch.load(pol['resume'],map_location='cpu');assert finite(ck) and ck['completed_epochs']==pol['resume_epoch'] and ck['config']==pol['resume_base_config'] and not ck['smoke'] and ck['scaler']
-        base_cfg=SimpleNamespace(**pol['resume_base_config']);old=build(base_cfg,centers);old_opt=optimizer(old,base_cfg)
-        old.load_state_dict(ck['model'],strict=True);old_opt.load_state_dict(ck['optimizer'])
-        incoming={k:v for k,v in ck['model'].items() if not k.startswith('v_net.')}
-        current=m.state_dict();assert set(incoming)=={k for k in current if not k.startswith('v_net.')}
-        for name,tensor in incoming.items():current[name].copy_(tensor.to(current[name].device))
-        m.load_state_dict(current,strict=True)
-        old_named=dict(old.named_parameters());new_named=dict(m.named_parameters());old_actual=getattr(old_opt,'optim',old_opt);new_actual=getattr(opt,'optim',opt)
-        copied=[];missing=[]
-        for name,new_parameter in new_named.items():
-            if name.startswith('v_net.'):continue
-            old_parameter=old_named[name];state=old_actual.state.get(old_parameter,{})
-            if not state:missing.append(name);continue
-            new_actual.state[new_parameter]={key:(value.detach().clone().to(new_parameter.device) if isinstance(value,torch.Tensor) else copy.deepcopy(value)) for key,value in state.items()}
-            copied.append(name)
-        assert not any(new_actual.state.get(p,{}) for n,p in new_named.items() if n.startswith('v_net.'))
-        start_epoch=int(ck['completed_epochs']);scaler_state=ck['scaler']
-        missing_fields=[k for k in ('rng','rng_state','sampler_state','loader_rng_state','assignment_state') if k not in ck]
-        assert len(missing_fields)==5 and cfg.assignment_queue_size==0 and not cfg.assignment_epoch_global
-        resume_audit=dict(copied_encoder_head_optimizer_states=len(copied),encoder_head_parameters_without_state=len(missing),fresh_velocity_optimizer_state=True,missing_checkpoint_fields=missing_fields)
-        del ck,old,old_opt,old_named,old_actual;torch.cuda.empty_cache()
-        assert opt.param_groups is opt.optim.param_groups
-        resume_note='Encoder/head model, BN, available LARS states, GradScaler and epoch restored; velocity 2048x4 and its optimizer state are fresh. Per-rank RNG was not stored, so bitwise replay is not claimed.'
-    install_preassigned_assignment(m); ddp=DDP(prepare_ddp(m),device_ids=[local],broadcast_buffers=False); capacitated_exact_assignment.install(cfg.Kprime)
-    scaler=torch.cuda.amp.GradScaler(init_scale=256. if start_epoch else 128.)
-    if start_epoch:scaler.load_state_dict(scaler_state)
+    opt=optimizer(m,cfg);start_epoch=0
+    ddp=DDP(prepare_ddp(m),device_ids=[local],broadcast_buffers=False); capacitated_exact_assignment.install(cfg.Kprime)
+    scaler=torch.cuda.amp.GradScaler(init_scale=128.)
     if rank==0:
         a.output.mkdir(parents=True,exist_ok=False)
         (a.output/'lars_weight_decay_actual.json').write_text(json.dumps(audit_optimizer(opt,m,cfg),indent=2))
-        (a.output/'evidence.json').write_text(json.dumps(dict(policy=a.policy,config=vars(cfg),weights=None,pretrained=False,initial_parameters_sha256=initial,centers_sha256=pol['centers_sha256'],resume=resume_note,resume_audit=resume_audit,velocity_parameter_count=sum(p.numel() for p in m.v_net.parameters()),torch=torch.__version__,evaluator_sha256=hashlib.sha256((ROOT/'training_monitor.py').read_bytes()).hexdigest()),indent=2))
+        (a.output/'evidence.json').write_text(json.dumps(dict(policy=a.policy,config=vars(cfg),weights=None,pretrained=False,initial_parameters_sha256=initial,centers_sha256=pol['centers_sha256'],velocity_parameter_count=sum(p.numel() for p in m.v_net.parameters()),torch=torch.__version__,evaluator_sha256=hashlib.sha256((ROOT/'training_monitor.py').read_bytes()).hexdigest()),indent=2))
     dist.barrier()
     if not a.smoke and not pol.get('full_eval_only',False):evaluate(m.model,paths['train'],paths['val'],a.output/('eval_e'+str(start_epoch)),start_epoch,workers=4,input_normalization=getattr(cfg,'input_normalization',True))
     ds=ImageNetHDF5(paths['train'],transform=TwoViews(cfg))
@@ -169,7 +143,7 @@ def main():
         loader=DataLoader(ds,sampler=sampler,batch_size=128,num_workers=int(cfg.num_workers),pin_memory=True,drop_last=True,worker_init_fn=seed_worker,generator=torch.Generator().manual_seed(seed))
         assert len(loader)==2502;m.reset_epoch_stats(len(loader));m.train()
         steps=16 if a.smoke else 2502;totals=torch.zeros(3,device='cuda');begin=time.perf_counter();cached=None
-        for step,(views,_) in enumerate(logical_batches(loader,m,getattr(cfg,'logical_assignment_batches',1),steps)):
+        for step,(views,_) in enumerate(loader):
             if cached is None:cached=[v.clone() for v in views]
             lr=learning_rate(cfg,epoch*2502+step,250200)
             for g in opt.param_groups:g['lr']=lr*g.get('module_lr_multiplier',1.)
@@ -183,7 +157,7 @@ def main():
             velocity_norm=[]
             hook=m.v_net.register_forward_hook(lambda module,inputs,output: velocity_norm.append(float(output.detach().float().norm(dim=1).mean()))) if diagnostic else None
             try:
-                with torch.autocast('cuda'):loss=checked_forward(m,ddp,views,cfg,a.smoke)
+                with torch.autocast('cuda'):loss=ddp(views)
             finally:
                 if hook is not None:hook.remove()
             assert_loss_semantics(m,cfg,loss)
@@ -202,22 +176,18 @@ def main():
                 if a.smoke and step==15:assert_smoke_updates(m,cfg,ratios)
                 if rank==0:
                     row=dict(epoch=epoch+1,step=step+1,loss=float(loss),fm=float(m.last_losses['fm']),alignment=float(m.last_losses['align']),lr_actual=actual.param_groups[0]['lr'],lr_requested=lr,endpoint=float(m.last_losses['endpoint']),velocity_output_norm_mean=(sum(velocity_norm)/len(velocity_norm) if velocity_norm else None),module_lr_actual={g.get('module_name','native'):g['lr'] for g in actual.param_groups},grads=grads,update_weight_ratio=ratios,scaler=scaler.get_scale(),elapsed=time.perf_counter()-begin)
-                    row.update(velocity_energy=float(m.last_losses['velocity_energy']),
-                               velocity_effective_norm=float(m.last_losses['velocity_effective_norm']),
+                    row.update(velocity_effective_norm=float(m.last_losses['velocity_effective_norm']),
                                target_velocity_norm=float(m.last_losses['target_velocity_norm']))
                     print(json.dumps(row),flush=True)
                     with (a.output/'progress.jsonl').open('a') as f:f.write(json.dumps(row)+'\n')
             if step+1==steps:break
         torch.cuda.synchronize();seconds=time.perf_counter()-begin;dist.all_reduce(totals);totals/=world*steps
         opt.zero_grad(set_to_none=True);gmetrics=[]
-        if rank==0 and cfg.fm_weight:
-            probe = transport_probe(m,cached)
-            (a.output/('transport_e'+str(epoch+1)+'.json')).write_text(json.dumps(probe,indent=2))
         assert finite(m.state_dict()) and finite(opt.state_dict())
         if rank==0:
             state=dict(model=m.state_dict(),optimizer=opt.state_dict(),scaler=scaler.state_dict(),centers=centers,config=vars(cfg),completed_epochs=epoch+1,smoke=a.smoke)
             tmp=a.output/'latest.tmp.pt';torch.save(state,tmp);os.replace(tmp,a.output/'latest.pt')
-            if epoch+1 in [5,10,20,50,100] and not a.smoke:os.link(a.output/'latest.pt',a.output/('e'+str(epoch+1)+'.pt'))
+            if epoch+1 in [3,5,10,20,50,75,100] and not a.smoke:os.link(a.output/'latest.pt',a.output/('e'+str(epoch+1)+'.pt'))
             (a.output/('epoch'+str(epoch+1)+'.json')).write_text(json.dumps(dict(epoch=epoch+1,steps=steps,seconds=seconds,loss=float(totals[0]),fm=float(totals[1]),alignment=float(totals[2]),geometry=gmetrics,assignment=m.assignment_stats()),indent=2))
         dist.barrier()
         if not a.smoke and not pol.get('full_eval_only',False):evaluate(m.model,paths['train'],paths['val'],a.output/('eval_e'+str(epoch+1)),epoch+1,workers=4,input_normalization=getattr(cfg,'input_normalization',True))

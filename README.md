@@ -50,93 +50,28 @@ Each dataset keeps its own model and training recipe. Data loading defaults to e
 
 ## ImageNet
 
-Use the files inside [imagenet/](imagenet/). Set the dataset manifest paths in `paths.json` and select the training configuration from `policies.json`. The included training runner uses four CUDA GPUs; the full linear evaluator runs separately on a frozen backbone checkpoint.
+The ImageNet implementation trains a ResNet-50 encoder, a projection head, and a 20-layer velocity network (hidden width 2048). Reference targets are assigned within each global mini-batch. The objective combines flow matching and view alignment.
 
-The default `no_window_e100` policy trains for 100 epochs without a cross-batch assignment window. Each physical batch contains 512 images pooled across four GPUs; targets are assigned within that batch, and the optimizer updates once per batch. Matching capacity stays at five. Run from the `imagenet/` directory:
+The configuration in `imagenet/policies.json` uses a global batch size of 512 on four GPUs, FP32 velocity prediction, and automatic mixed precision for the encoder and projector. The reference contains 4096 centers. `pool_extra_repeats=4` is the extra reference-pool repetition count (M); the number of slots per center is `ceil(batch_size / Kprime) + M`, which is five for this configuration.
 
-```bash
-python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --output runs/no_window
-```
-
-The optional `energy20_e100` policy uses a 4096-image assignment window spanning eight physical batches, with an optimizer update after each physical batch:
+Set the training and validation manifest paths in `imagenet/paths.json`, then run:
 
 ```bash
-python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --policy energy20_e100 --output runs/window4096
+cd imagenet
+python run.py --audit
+python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --smoke --output runs/smoke
+python run.py --validate runs/smoke
+python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --output runs/imagenet
 ```
 
-After training, use the full linear evaluator on a saved checkpoint with the complete training and validation splits:
+Training runs for 100 epochs with a 10-epoch learning-rate warmup and cosine decay. Each GPU process uses four data-loader workers. Atomic `latest.pt` checkpoints are saved after each epoch; snapshots are retained at epochs 3, 5, 10, 20, 50, 75, and 100.
+
+Run full linear evaluation separately on a saved encoder checkpoint:
 
 ```bash
-python full_linear_eval.py --checkpoint runs/no_window/e100.pt --train-manifest /path/to/train.manifest.json --val-manifest /path/to/val.manifest.json --output runs/no_window_linear
+python full_linear_eval.py --checkpoint runs/imagenet/e100.pt --train-manifest /path/to/train.manifest.json --val-manifest /path/to/val.manifest.json --output runs/linear --expected-encoder-epochs 100
 ```
 
-| File or directory | Function |
-| --- | --- |
-| [run.py](imagenet/run.py) | Distributed training, configuration audits, short validation runs, and checkpoint saving. |
-| [policies.json](imagenet/policies.json), [paths.json](imagenet/paths.json) | Training configuration, reference-tensor checks, and train/validation manifest paths. |
-| [artifacts/](imagenet/artifacts/) | Fixed reference-target tensor. |
-| [frozen_source/](imagenet/frozen_source/) | Backbone, projection head, velocity network, and FBDM objective used by the runner. |
-| [imagenet_ddp_smoke_20260909.py](imagenet/imagenet_ddp_smoke_20260909.py) | Distributed model setup and training-view construction. |
-| [logical_assignment_batch.py](imagenet/logical_assignment_batch.py) | Target planning across multiple batches, followed by physical-batch training. |
-| [certified_assignment.py](imagenet/certified_assignment.py), [capacitated_exact_assignment.py](imagenet/capacitated_exact_assignment.py), [exact_assignment.py](imagenet/exact_assignment.py) | Capacity-constrained matching and solver validation. |
-| [assignment_legacy_reference.py](imagenet/assignment_legacy_reference.py) | Full capacitated solver used by screening fallback and validation. |
-| [optimizer_recipe.py](imagenet/optimizer_recipe.py), [upstream_lars.py](imagenet/upstream_lars.py) | Optimizer construction and learning-rate scheduling. |
-| [velocity_constraints.py](imagenet/velocity_constraints.py) | Velocity constraints, energy regularization, and transport diagnostics. |
-| [amp_overflow_guard.py](imagenet/amp_overflow_guard.py), [lars_wd_audit.py](imagenet/lars_wd_audit.py), [diagnostic_adapters.py](imagenet/diagnostic_adapters.py) | Numerical safety and training checks. |
-| [training_monitor.py](imagenet/training_monitor.py) | Intermediate subset evaluation during training. |
-| [full_linear_eval.py](imagenet/full_linear_eval.py) | Full ImageNet linear evaluation with a frozen backbone. |
-| [imagenet_hdf5/builder.py](imagenet/imagenet_hdf5/builder.py), [dataset.py](imagenet/imagenet_hdf5/dataset.py), [validator.py](imagenet/imagenet_hdf5/validator.py) | Build, read, and validate sharded HDF5 datasets and their JSON manifests. |
+Evaluation freezes the backbone and its batch-normalization statistics, uses raw 2048-dimensional backbone features, and trains a linear classifier for 500 epochs (seed 0). Input preprocessing is `Resize(256)`, `CenterCrop(224)`, and `ToTensor()`, without ImageNet mean/std normalization.
 
-ImageNet's `num_workers` setting in `policies.json` is applied per GPU process; the default `no_window_e100` policy uses four workers per process.
-
-### ImageNet checkpoint
-
-Download the [ResNet-50 FBDM checkpoint](https://github.com/vincen-github/FBDM/releases/download/imagenet-r50-align10-m5-e100/fbdm_imagenet_r50_align10_m5_e100.pt) from Releases. It contains the encoder, projection head, velocity network, reference targets, and training state.
-
-This release checkpoint corresponds to the optional windowed `energy20_e100` policy.
-
-To extract frozen image features, use the encoder:
-
-```python
-import torch
-from torchvision import models, transforms
-
-checkpoint = torch.load("fbdm_imagenet_r50_align10_m5_e100.pt", map_location="cpu", weights_only=False)
-encoder = models.resnet50(weights=None)
-encoder.fc = torch.nn.Identity()
-encoder.load_state_dict(
-    {name.removeprefix("model."): value
-     for name, value in checkpoint["model"].items()
-     if name.startswith("model.")},
-    strict=True,
-)
-encoder.eval()
-
-preprocess = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-])
-
-with torch.no_grad():
-    features = encoder(preprocess(image).unsqueeze(0))
-```
-
-Here, `image` is a PIL image. This checkpoint's input pipeline uses tensors in `[0, 1]` without ImageNet mean/std normalization. For the complete evaluation pipeline, see [imagenet/full_linear_eval.py](imagenet/full_linear_eval.py).
-
-
-### No-window ImageNet checkpoint
-
-ImageNet training defaults to `no_window_e100`, which assigns reference targets within each global mini-batch and updates the model once per batch, without a cross-batch assignment window. Configure the dataset manifests in `imagenet/paths.json`, then run `python -m torch.distributed.run --standalone --nproc_per_node=4 run.py --output runs/no_window` from the `imagenet/` directory. Use `full_linear_eval.py` for full ImageNet linear evaluation of the frozen backbone checkpoint.
-
-Download the [no-window ResNet-50 FBDM checkpoint](https://github.com/vincen-github/FBDM/releases/download/imagenet-r50-nowindow-beta25-time025-e100/fbdm_imagenet_r50_nowindow_beta25_time025_e100.pt). It achieves **60.178% linear probe accuracy** with full ImageNet linear evaluation: 100 pretraining epochs, a frozen backbone, and 500 linear-classifier epochs (seed 0).
-
-The corresponding `no_window_e100` recipe uses rational time mapping (`time_map="frontload_rational"`, `time_map_param=0.25`), energy coefficient `velocity_energy_beta=25`, crop scale `[0.2, 1.0]`, alignment weight 10, and FM weight 1.3. The global batch size is 512, the reference contains 4096 centers, and matching capacity stays at five. The complete training configuration is stored in `checkpoint["config"]`.
-
-Use the encoder-loading example above with the downloaded filename:
-
-```python
-checkpoint = torch.load("fbdm_imagenet_r50_nowindow_beta25_time025_e100.pt", map_location="cpu", weights_only=False)
-```
-
-Input preprocessing remains `Resize(256)`, `CenterCrop(224)`, and `ToTensor()`, without ImageNet mean/std normalization.
+The training entry point is `imagenet/run.py`; `imagenet/frozen_source/` contains the model and objective. Matching solvers live in `imagenet/certified_assignment.py` and its helper modules. `imagenet/imagenet_hdf5/` provides dataset building, loading, and validation utilities. Reference tensors in `imagenet/artifacts/` are required inputs, not pretrained checkpoints.

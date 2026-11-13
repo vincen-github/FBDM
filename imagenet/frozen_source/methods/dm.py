@@ -11,7 +11,6 @@ from eval.get_data import get_data
 from eval.knn import eval_knn
 from eval.sgd import eval_sgd
 from model import VelocityNet
-from velocity_constraints import bound_velocity, energy_penalty
 
 from .base import BaseMethod
 from .utils import perturbation, repeated_center_pool
@@ -557,7 +556,7 @@ class DM(BaseMethod):
 
     def _velocity(self, z, t):
         if self.delta_v_net is None:
-            return bound_velocity(self.v_net(z, t), float(getattr(self.cfg, 'velocity_norm_cap', 0.))), None, None, None
+            return self.v_net(z, t), None, None, None
         with torch.no_grad():
             base_velocity = self.v_net(z, t)
         delta_velocity = self.delta_v_net(z, t)
@@ -1273,11 +1272,8 @@ class DM(BaseMethod):
         else:
             align_1, align_2 = z0_1, z0_2
         loss_align = (align_1 - align_2).square().mean()
-        beta = float(getattr(self.cfg, 'velocity_energy_beta', 0.))
-        loss_velocity_energy = energy_penalty(self, zt1, t1, zt2, t2) if beta else loss_fm.detach().new_zeros(())
         total = (
-            self.cfg.fm_weight * beta * loss_velocity_energy
-            +             self.cfg.fm_weight * loss_fm
+            self.cfg.fm_weight * loss_fm
             + self.cfg.velocity_radial_weight * loss_velocity_radial
             + self.cfg.endpoint_weight * loss_endpoint
             + self.cfg.soft_occupancy_weight * loss_soft_occupancy
@@ -1292,7 +1288,6 @@ class DM(BaseMethod):
             + self.cfg.residual_regularization * loss_residual_regularization
         )
         self.last_losses = {
-            "velocity_energy": loss_velocity_energy.detach(),
             "velocity_effective_norm": .5 * (prediction1.detach().float().norm(dim=1).mean() + prediction2.detach().float().norm(dim=1).mean()) if self.cfg.fm_weight else loss_fm.detach().new_zeros(()),
             "target_velocity_norm": .5 * (target_v1.detach().float().norm(dim=1).mean() + target_v2.detach().float().norm(dim=1).mean()) if self.cfg.fm_weight else loss_fm.detach().new_zeros(()),
             "fm": loss_fm.detach(),
