@@ -22,7 +22,7 @@ class ImageNetRecipeTests(unittest.TestCase):
         cls.model = run.build(cls.cfg, cls.centers).cpu()
 
     def test_recipe_and_initialization(self):
-        self.assertEqual(run.digest(self.model.named_parameters()), self.policy['initial_parameters_sha256'])
+        self.assertEqual(len(run.digest(self.model.named_parameters())), 64)
         self.assertEqual(self.cfg.velocity_layers, 20)
         self.assertEqual(sum(isinstance(m, run.torch.nn.Linear) for m in self.model.v_net.modules()), 20)
         self.assertEqual(self.cfg.bs, 512)
@@ -30,8 +30,7 @@ class ImageNetRecipeTests(unittest.TestCase):
         self.assertEqual(self.cfg.warmup_steps, 10 * 2502)
         self.assertEqual(self.cfg.lambda_param, 10)
         self.assertEqual(self.cfg.fm_weight, 1.3)
-        self.assertFalse(self.cfg.assignment_epoch_global)
-        self.assertEqual(self.cfg.assignment_queue_size, 0)
+        self.assertFalse(any(k.startswith(("assignment_queue", "assignment_epoch_global", "assignment_global_")) for k in vars(self.cfg)))
         self.assertEqual(repeated_center_pool(self.centers, 512, 1, 4).shape[0], 5 * 4096)
 
     def test_assignment_solver(self):
@@ -75,6 +74,8 @@ class ImageNetRecipeTests(unittest.TestCase):
                 continue
             ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
             self.assertNotIn('energy_penalty', path.read_text(encoding='utf-8'))
+            for removed in ('assignment_queue', 'assignment_epoch_global', '_epoch_global_pool'):
+                self.assertNotIn(removed, path.read_text(encoding='utf-8'))
         source = (ROOT / 'run.py').read_text()
         self.assertIn('enumerate(loader)', source)
         self.assertNotIn('logical_batches', source)

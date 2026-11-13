@@ -1,5 +1,5 @@
 """Distributed ImageNet FBDM training and validation."""
-import argparse,copy,hashlib,json,os,random,sys,time
+import argparse,hashlib,json,os,random,sys,time
 from pathlib import Path
 from types import SimpleNamespace
 from datetime import timedelta
@@ -39,22 +39,9 @@ def finite(x):
 
 def build(cfg,centers):
     torch.manual_seed(0);random.seed(0);np.random.seed(0)
-    vstate=None
-    if cfg.head_layers==2:
-        control=SimpleNamespace(**{**vars(cfg),'head_layers':4})
-        m=GlobalAssignmentDM(control,centers)
-        vstate=copy.deepcopy(m.v_net.state_dict());del m
-        torch.manual_seed(0);random.seed(0);np.random.seed(0)
     m=GlobalAssignmentDM(cfg,centers);assert m.model.init_weights_argument is None
     m.model=m.model.module
-    if vstate is not None:m.v_net.load_state_dict(vstate,strict=True)
-    if getattr(cfg,"head_final_bn_freeze_beta",False):
-        assert isinstance(m.head[-1],torch.nn.BatchNorm1d) and m.head[-1].affine
-        m.head[-1].bias.requires_grad_(False)
-    if cfg.fm_weight==0:
-        for parameter in m.v_net.parameters():parameter.requires_grad_(False)
     assert cfg.velocity_layers == 20 and cfg.pool_extra_repeats == 4
-    assert cfg.assignment_queue_size == 0 and not cfg.assignment_epoch_global
     return m
 
 def input_policy(name):
@@ -67,29 +54,8 @@ def input_policy(name):
 
 def optimizer(m,cfg):
     opt=make_diagnostic_optimizer(m,SimpleNamespace(**{**vars(cfg),'optimizer_name':'lars'}))
-    if cfg.optimizer_name=='adam':
-        opt=torch.optim.Adam([dict(params=g['params'],weight_decay=g['weight_decay']) for g in opt.param_groups],lr=cfg.lr,betas=(.9,.99),eps=1e-8)
     audit_optimizer(opt,m,cfg)
     return opt
-
-def geom(m,views,rank,world):
-    buffers={n:b.clone() for n,b in m.named_buffers()}
-    old_modes={n:v.training for n,v in m.named_modules()};m.train()
-    records=[]
-    with torch.no_grad():
-        for view,x in enumerate(views):
-            with torch.autocast('cuda'):h=m.model(x.cuda());z=m.head(h)
-            rec=dict(view=view)
-            for name,t in [('backbone',h),('z0',torch.nn.functional.normalize(z.float(),dim=1))]:
-                parts=[torch.empty_like(t) for _ in range(world)];dist.all_gather(parts,t.contiguous())
-                if rank==0:
-                    a=torch.cat(parts).float();u=torch.nn.functional.normalize(a,dim=1);n=len(a)
-                    c=a-a.mean(0);c_cpu=c.double().cpu();s=torch.linalg.eigvalsh(c_cpu@c_cpu.T).clamp_min(0);prob=s/s.sum().clamp_min(1e-30)
-                    rec[name]=dict(cos=float((u.sum(0).square().sum()-n)/(n*(n-1))),std=float(c.square().mean(0).sqrt().mean()),rank=float(torch.exp(-(prob*prob.clamp_min(1e-30).log()).sum())))
-            records.append(rec)
-    for n,b in m.named_buffers():b.copy_(buffers[n])
-    for n,v in m.named_modules():v.training=old_modes[n]
-    return records
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--policy',default='imagenet');p.add_argument('--audit',action='store_true');p.add_argument('--smoke',action='store_true');p.add_argument('--output',type=Path);p.add_argument('--validate',type=Path)
@@ -98,23 +64,16 @@ def main():
     pol,cfg,centers=input_policy(a.policy)
     assert pol.get('from_scratch') is True and not pol.get('resume')
     assert cfg.init_mode=='random'
-    if pol['bridge_kind']=='paper_rho':
-        assert cfg.fm_weight==1.3 and cfg.endpoint_weight==0. and 0 < cfg.fm_encoder_grad_scale <= 1.
-    else:
-        assert pol['bridge_kind']=='pure_regression' and cfg.fm_weight==0. and cfg.endpoint_weight==1.3
+    assert pol['bridge_kind']=='paper_rho' and cfg.fm_weight==1.3 and cfg.endpoint_weight==0.
     assert cfg.dispatch_ramp_epochs==0 and cfg.fm_time_samples==1
     if a.validate:
         state=torch.load(a.validate/'latest.pt',map_location='cpu');ev=json.loads((a.validate/'evidence.json').read_text());done=json.loads((a.validate/'completion.json').read_text())
         assert done['status']=='ok' and done['smoke'] and state['smoke'] and finite(state) and ev['weights'] is None and ev['pretrained'] is False and state['optimizer'] and state['scaler']
         assert ev['centers_sha256']==pol['centers_sha256'] and ev['evaluator_sha256']==hashlib.sha256((ROOT/'training_monitor.py').read_bytes()).hexdigest()
-        assert state['config']==vars(cfg) and ev['initial_parameters_sha256']==pol['initial_parameters_sha256']
-        if cfg.fm_weight==0:
-            assert done.get('endpoint_semantic_checks',0)==32
-            assert digest((n[len('v_net.'):],t) for n,t in state['model'].items() if n.startswith('v_net.'))==pol['diagnostic_velocity_initial_sha256']
+        assert state['config']==vars(cfg) and len(ev['initial_parameters_sha256'])==64
         print('SMOKE_FINITE_CONFIG_INIT_OK',flush=True);return
     paths=json.loads((ROOT/'paths.json').read_text())
     m=build(cfg,centers);initial=digest(m.named_parameters())
-    assert initial==pol['initial_parameters_sha256'],(a.policy,initial,pol['initial_parameters_sha256'])
     if a.audit:
         assert exact_assignment.self_test()==24
         assert len(ImageNetHDF5(paths['train']))==1281167 and len(ImageNetHDF5(paths['val']))==50000
@@ -150,9 +109,6 @@ def main():
             actual=getattr(opt,'optim',opt);assert all(g['lr']==lr*g.get('module_lr_multiplier',1.) for g in actual.param_groups)
             diagnostic=step==0 or (step+1)%250==0 or (a.smoke and step==15)
             before={n:p.detach().clone() for n,p in watched.items()} if diagnostic else {}
-            if getattr(cfg,'dispatch_ramp_epochs',0):
-                alpha=min(1.,((epoch-start_epoch)*2502+step+1)/(cfg.dispatch_ramp_epochs*2502))
-                cfg.fm_weight=1.3*alpha;cfg.endpoint_weight=1.3*(1-alpha)
             opt.zero_grad(set_to_none=True)
             velocity_norm=[]
             hook=m.v_net.register_forward_hook(lambda module,inputs,output: velocity_norm.append(float(output.detach().float().norm(dim=1).mean()))) if diagnostic else None

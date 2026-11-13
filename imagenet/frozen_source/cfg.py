@@ -68,28 +68,6 @@ def get_cfg():
     )
     parser.add_argument("--target-mode", choices=["shared_point", "shared_center"], default="shared_point")
     parser.add_argument(
-        "--assignment-queue-size",
-        type=int,
-        default=0,
-        help=(
-            "Number of detached consensus features retained for sliding-window "
-            "balanced assignment. Zero preserves the original per-batch Hungarian."
-        ),
-    )
-    parser.add_argument(
-        "--assignment-epoch-global",
-        action="store_true",
-        help=(
-            "Use online epoch-wide remaining quotas: each minibatch may be "
-            "non-uniform, while the final epoch marginal is exactly uniform."
-        ),
-    )
-    parser.add_argument("--assignment-global-alpha", type=float, default=0.5)
-    parser.add_argument("--assignment-global-cap", type=int, default=4)
-    parser.add_argument("--assignment-global-temperature", type=float, default=0.05)
-    parser.add_argument("--assignment-global-dual-lr", type=float, default=0.0)
-    parser.add_argument("--assignment-global-dual-clip", type=float, default=0.2)
-    parser.add_argument(
         "--assignment-feature-source",
         choices=["online", "ema"],
         default="online",

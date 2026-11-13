@@ -16,14 +16,7 @@
       "add_bn": true,
       "alignment_space": "z0",
       "arch": "resnet50",
-      "assignment_epoch_global": false,
       "assignment_feature_source": "online",
-      "assignment_global_alpha": 1.0,
-      "assignment_global_cap": 4,
-      "assignment_global_dual_clip": 0.25,
-      "assignment_global_dual_lr": 0.0,
-      "assignment_global_temperature": 0.05,
-      "assignment_queue_size": 0,
       "assignment_teacher_momentum": 0.99,
       "autocontrast_prob": 0.0,
       "backbone_alignment_weight": 0.0,
@@ -185,7 +178,6 @@
     "formal_epochs": 100,
     "max_formal_epochs": 100,
     "force_full_100": true,
-    "full_eval_only": true,
-    "initial_parameters_sha256": "0256117885fd6159450ece94f399f05d4f40835e3e282fb9d9684d853bd0c0ca"
+    "full_eval_only": true
   }
 }

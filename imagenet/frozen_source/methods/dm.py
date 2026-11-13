@@ -285,36 +285,6 @@ class DM(BaseMethod):
                 cfg.time_map_param,
             )
         self.register_buffer("centers", F.normalize(centers.float(), p=2, dim=1), persistent=False)
-        if cfg.assignment_queue_size < 0:
-            raise ValueError("assignment_queue_size must be non-negative")
-        if cfg.assignment_queue_size:
-            if cfg.assignment_queue_size % cfg.bs:
-                raise ValueError("assignment_queue_size must be a multiple of bs")
-            if cfg.bs % self.centers.shape[0]:
-                raise ValueError("bs must be divisible by Kprime for queued exact-capacity assignment")
-            if cfg.target_redundancy != 1 or cfg.pool_extra_repeats != 0:
-                raise ValueError(
-                    "queued assignment currently requires target_redundancy=1 "
-                    "and pool_extra_repeats=0"
-                )
-        if cfg.assignment_epoch_global:
-            if cfg.assignment_queue_size:
-                raise ValueError("epoch-global assignment and feature queue are mutually exclusive")
-            if not 0.0 <= cfg.assignment_global_alpha <= 1.0:
-                raise ValueError("assignment_global_alpha must be in [0, 1]")
-            if cfg.assignment_global_cap < 0:
-                raise ValueError("assignment_global_cap must be non-negative")
-            if cfg.assignment_global_temperature <= 0:
-                raise ValueError("assignment_global_temperature must be positive")
-            if cfg.assignment_global_dual_lr < 0:
-                raise ValueError("assignment_global_dual_lr must be non-negative")
-            if cfg.assignment_global_dual_clip < 0:
-                raise ValueError("assignment_global_dual_clip must be non-negative")
-            if cfg.target_redundancy != 1 or cfg.pool_extra_repeats != 0:
-                raise ValueError(
-                    "epoch-global assignment currently requires target_redundancy=1 "
-                    "and pool_extra_repeats=0"
-                )
         if cfg.soft_occupancy_weight < 0:
             raise ValueError("soft occupancy weight must be non-negative")
         if cfg.soft_occupancy_temperature <= 0:
@@ -404,31 +374,6 @@ class DM(BaseMethod):
             persistent=False,
         )
         self.register_buffer(
-            "assignment_queue",
-            torch.empty(cfg.assignment_queue_size, self.centers.shape[1]),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_queue_center_ids",
-            torch.empty(cfg.assignment_queue_size, dtype=torch.long),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_queue_valid",
-            torch.zeros((), dtype=torch.long),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_queue_reassignments",
-            torch.zeros((), dtype=torch.long),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_queue_reassignment_total",
-            torch.zeros((), dtype=torch.long),
-            persistent=False,
-        )
-        self.register_buffer(
             "assignment_batch_active_sum",
             torch.zeros((), dtype=torch.long),
             persistent=False,
@@ -449,31 +394,6 @@ class DM(BaseMethod):
             persistent=False,
         )
         self.register_buffer(
-            "assignment_global_remaining",
-            torch.zeros(self.centers.shape[0], dtype=torch.long),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_global_dual",
-            torch.zeros(self.centers.shape[0]),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_global_quota_min",
-            torch.full((), cfg.bs, dtype=torch.long),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_global_quota_max",
-            torch.zeros((), dtype=torch.long),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_global_quota_cv_sum",
-            torch.zeros(()),
-            persistent=False,
-        )
-        self.register_buffer(
             "assignment_cosine_sum",
             torch.zeros(()),
             persistent=False,
@@ -488,22 +408,6 @@ class DM(BaseMethod):
             torch.zeros((), dtype=torch.long),
             persistent=False,
         )
-        self.register_buffer(
-            "assignment_late_cosine_sum",
-            torch.zeros(()),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_late_oracle_regret_sum",
-            torch.zeros(()),
-            persistent=False,
-        )
-        self.register_buffer(
-            "assignment_late_quality_samples",
-            torch.zeros((), dtype=torch.long),
-            persistent=False,
-        )
-        self.assignment_epoch_num_batches = 0
         self.assignment_match_seconds = 0.0
         self.instrumentation = None
 
@@ -571,113 +475,7 @@ class DM(BaseMethod):
             alpha,
         )
 
-    @staticmethod
-    def _integer_quota_projection(target, lower, upper, total):
-        """Exact bounded integer projection minimizing squared distance to target."""
-        target = np.asarray(target, dtype=np.float64)
-        lower = np.asarray(lower, dtype=np.int64)
-        upper = np.asarray(upper, dtype=np.int64)
-        if target.shape != lower.shape or lower.shape != upper.shape:
-            raise ValueError("quota projection arrays must have identical shapes")
-        if np.any(lower < 0) or np.any(upper < lower):
-            raise RuntimeError("invalid global-assignment quota bounds")
-        lower_sum, upper_sum = int(lower.sum()), int(upper.sum())
-        if not lower_sum <= total <= upper_sum:
-            raise RuntimeError(
-                f"infeasible global-assignment quotas: lower={lower_sum} "
-                f"total={total} upper={upper_sum}"
-            )
 
-        quota = lower.copy()
-        for _ in range(total - lower_sum):
-            marginal = 2.0 * (quota - target) + 1.0
-            marginal[quota >= upper] = np.inf
-            index = int(np.argmin(marginal))
-            if not np.isfinite(marginal[index]):
-                raise RuntimeError("quota projection exhausted all upper bounds")
-            quota[index] += 1
-        return quota
-
-    def _epoch_global_pool(self, consensus):
-        batch_size = consensus.shape[0]
-        remaining = self.assignment_global_remaining
-        remaining_total = int(remaining.sum())
-        if remaining_total < batch_size or remaining_total % batch_size:
-            raise RuntimeError(
-                f"invalid epoch-global remaining mass: {remaining_total}"
-            )
-
-        future_total = remaining_total - batch_size
-        k = self.centers.shape[0]
-        future_floor = future_total // k
-        future_ceil = math.ceil(future_total / k)
-        cap = self.cfg.assignment_global_cap
-        lower = torch.maximum(
-            torch.zeros_like(remaining),
-            remaining - (future_ceil + cap),
-        )
-        lower = torch.maximum(
-            lower,
-            remaining - future_total,
-        )
-        upper = torch.minimum(
-            remaining,
-            remaining - max(0, future_floor - cap),
-        )
-
-        center_score = consensus @ self.centers.T
-        adjusted_score = center_score - self.assignment_global_dual.unsqueeze(0)
-        adjusted_score[:, upper == 0] = -torch.inf
-        demand = torch.softmax(
-            adjusted_score / self.cfg.assignment_global_temperature,
-            dim=1,
-        ).sum(dim=0)
-        pace = remaining.float() * (batch_size / remaining_total)
-        alpha = self.cfg.assignment_global_alpha
-        target = (1.0 - alpha) * pace + alpha * demand
-        quota_np = self._integer_quota_projection(
-            target.detach().cpu().numpy(),
-            lower.cpu().numpy(),
-            upper.cpu().numpy(),
-            batch_size,
-        )
-        quota = torch.as_tensor(quota_np, device=consensus.device, dtype=torch.long)
-        center_indices = torch.arange(k, device=consensus.device)
-        pool_center_ids = torch.cat(
-            [
-                center_indices[quota > repeat_index]
-                for repeat_index in range(int(quota.max()))
-            ]
-        )
-        if pool_center_ids.numel() != batch_size:
-            raise RuntimeError("epoch-global quota projection did not produce one target per sample")
-
-        quota_float = quota.float()
-        self.assignment_global_quota_min.copy_(
-            torch.minimum(self.assignment_global_quota_min, quota.min())
-        )
-        self.assignment_global_quota_max.copy_(
-            torch.maximum(self.assignment_global_quota_max, quota.max())
-        )
-        self.assignment_global_quota_cv_sum.add_(
-            quota_float.std(unbiased=False) / quota_float.mean().clamp_min(EPS)
-        )
-
-        dual_lr = self.cfg.assignment_global_dual_lr
-        if dual_lr:
-            dual_update = dual_lr * (
-                demand / batch_size - remaining.float() / remaining_total
-            )
-            self.assignment_global_dual.add_(dual_update)
-            self.assignment_global_dual.sub_(self.assignment_global_dual.mean())
-            clip = self.cfg.assignment_global_dual_clip
-            if clip:
-                self.assignment_global_dual.clamp_(-clip, clip)
-
-        self.assignment_global_remaining.sub_(quota)
-        if (self.assignment_global_remaining < 0).any():
-            raise RuntimeError("epoch-global assignment consumed negative center capacity")
-        return self.centers[pool_center_ids], pool_center_ids
 
     def ode_solve(self, z, steps):
         if steps < 1:
@@ -701,59 +499,17 @@ class DM(BaseMethod):
             if self.cfg.normalize_assignment_consensus:
                 consensus = F.normalize(consensus, p=2, dim=1)
 
-            queue_capacity = self.assignment_queue.shape[0]
-            if self.cfg.assignment_epoch_global:
-                pool, pool_center_ids = self._epoch_global_pool(consensus)
-                score = consensus @ pool.T
-                _, columns = linear_sum_assignment((-score).cpu().numpy())
-                columns = torch.as_tensor(columns, device=z0_1.device, dtype=torch.long)
-                center_ids = pool_center_ids[columns]
-                center = pool[columns]
-            elif queue_capacity == 0:
-                pool = repeated_center_pool(
-                    self.centers,
-                    z0_1.shape[0],
-                    self.cfg.target_redundancy,
-                    self.cfg.pool_extra_repeats,
-                )
-                score = consensus @ pool.T
-                _, columns = linear_sum_assignment((-score).cpu().numpy())
-                columns = torch.as_tensor(columns, device=z0_1.device, dtype=torch.long)
-                center_ids = columns.remainder(self.centers.shape[0])
-                center = pool[columns]
-            else:
-                queue_valid = int(self.assignment_queue_valid)
-                queued = self.assignment_queue[:queue_valid]
-                joint_consensus = torch.cat((queued, consensus), dim=0)
-                pool = repeated_center_pool(
-                    self.centers,
-                    joint_consensus.shape[0],
-                    self.cfg.target_redundancy,
-                    self.cfg.pool_extra_repeats,
-                )
-                score = joint_consensus @ pool.T
-                _, columns = linear_sum_assignment((-score).cpu().numpy())
-                columns = torch.as_tensor(columns, device=z0_1.device, dtype=torch.long)
-                joint_center_ids = columns.remainder(self.centers.shape[0])
-
-                if queue_valid:
-                    previous_center_ids = self.assignment_queue_center_ids[:queue_valid]
-                    self.assignment_queue_reassignments.add_(
-                        (joint_center_ids[:queue_valid] != previous_center_ids).sum()
-                    )
-                    self.assignment_queue_reassignment_total.add_(queue_valid)
-
-                center_ids = joint_center_ids[-z0_1.shape[0] :]
-                center = self.centers[center_ids]
-
-                retained = min(queue_capacity, joint_consensus.shape[0])
-                self.assignment_queue[:retained].copy_(
-                    joint_consensus[-retained:].detach()
-                )
-                self.assignment_queue_center_ids[:retained].copy_(
-                    joint_center_ids[-retained:]
-                )
-                self.assignment_queue_valid.fill_(retained)
+            pool = repeated_center_pool(
+                self.centers,
+                z0_1.shape[0],
+                self.cfg.target_redundancy,
+                self.cfg.pool_extra_repeats,
+            )
+            score = consensus @ pool.T
+            _, columns = linear_sum_assignment((-score).cpu().numpy())
+            columns = torch.as_tensor(columns, device=z0_1.device, dtype=torch.long)
+            center_ids = columns.remainder(self.centers.shape[0])
+            center = pool[columns]
 
             self.assignment_match_seconds += time.perf_counter() - match_start
             center_score = consensus @ self.centers.T
@@ -762,12 +518,6 @@ class DM(BaseMethod):
             self.assignment_cosine_sum.add_(assigned_cosine.sum())
             self.assignment_oracle_regret_sum.add_(oracle_regret.sum())
             self.assignment_quality_samples.add_(z0_1.shape[0])
-            if self.cfg.assignment_epoch_global and int(
-                self.assignment_batch_steps
-            ) >= math.floor(0.9 * self.assignment_epoch_num_batches):
-                self.assignment_late_cosine_sum.add_(assigned_cosine.sum())
-                self.assignment_late_oracle_regret_sum.add_(oracle_regret.sum())
-                self.assignment_late_quality_samples.add_(z0_1.shape[0])
             self.assignment_counts.add_(
                 torch.bincount(center_ids, minlength=self.centers.shape[0])
             )
@@ -861,34 +611,13 @@ class DM(BaseMethod):
 
     def reset_epoch_stats(self, num_batches=None):
         self.assignment_counts.zero_()
-        self.assignment_queue_valid.zero_()
-        self.assignment_queue_reassignments.zero_()
-        self.assignment_queue_reassignment_total.zero_()
         self.assignment_batch_active_sum.zero_()
         self.assignment_batch_active_min.fill_(self.centers.shape[0])
         self.assignment_batch_active_max.zero_()
         self.assignment_batch_steps.zero_()
-        self.assignment_global_quota_min.fill_(self.cfg.bs)
-        self.assignment_global_quota_max.zero_()
-        self.assignment_global_quota_cv_sum.zero_()
         self.assignment_cosine_sum.zero_()
         self.assignment_oracle_regret_sum.zero_()
         self.assignment_quality_samples.zero_()
-        self.assignment_late_cosine_sum.zero_()
-        self.assignment_late_oracle_regret_sum.zero_()
-        self.assignment_late_quality_samples.zero_()
-        if self.cfg.assignment_epoch_global:
-            if not num_batches:
-                raise ValueError("epoch-global assignment requires a positive num_batches")
-            epoch_samples = num_batches * self.cfg.bs
-            if epoch_samples % self.centers.shape[0]:
-                raise ValueError(
-                    "epoch-global assignment requires epoch samples divisible by Kprime"
-                )
-            self.assignment_global_remaining.fill_(
-                epoch_samples // self.centers.shape[0]
-            )
-            self.assignment_epoch_num_batches = num_batches
         self.assignment_match_seconds = 0.0
 
     def assignment_stats(self):
@@ -915,58 +644,9 @@ class DM(BaseMethod):
                     ),
                     "assignment_batch_active_min": int(self.assignment_batch_active_min),
                     "assignment_batch_active_max": int(self.assignment_batch_active_max),
-                    "assignment_queue_valid": int(self.assignment_queue_valid),
                     "assignment_match_seconds": self.assignment_match_seconds,
                     "assignment_match_seconds_per_batch": (
                         self.assignment_match_seconds / batch_steps
-                    ),
-                }
-            )
-        reassignment_total = int(self.assignment_queue_reassignment_total)
-        if reassignment_total:
-            stats["assignment_queue_churn"] = float(
-                self.assignment_queue_reassignments.float() / reassignment_total
-            )
-        if self.cfg.assignment_epoch_global and batch_steps:
-            quality_samples = int(self.assignment_quality_samples)
-            late_quality_samples = int(self.assignment_late_quality_samples)
-            stats.update(
-                {
-                    "assignment_global_quota_min": int(self.assignment_global_quota_min),
-                    "assignment_global_quota_max": int(self.assignment_global_quota_max),
-                    "assignment_global_quota_cv_mean": float(
-                        self.assignment_global_quota_cv_sum / batch_steps
-                    ),
-                    "assignment_global_remaining_total": int(
-                        self.assignment_global_remaining.sum()
-                    ),
-                    "assignment_global_remaining_min": int(
-                        self.assignment_global_remaining.min()
-                    ),
-                    "assignment_global_remaining_max": int(
-                        self.assignment_global_remaining.max()
-                    ),
-                    "assignment_global_dual_absmax": float(
-                        self.assignment_global_dual.abs().max()
-                    ),
-                    "assignment_global_dual_saturated_fraction": float(
-                        (
-                            self.assignment_global_dual.abs()
-                            >= max(self.cfg.assignment_global_dual_clip - EPS, 0.0)
-                        ).float().mean()
-                    ) if self.cfg.assignment_global_dual_clip else 0.0,
-                    "assignment_cosine_mean": float(
-                        self.assignment_cosine_sum / max(quality_samples, 1)
-                    ),
-                    "assignment_oracle_regret_mean": float(
-                        self.assignment_oracle_regret_sum / max(quality_samples, 1)
-                    ),
-                    "assignment_late_cosine_mean": float(
-                        self.assignment_late_cosine_sum / max(late_quality_samples, 1)
-                    ),
-                    "assignment_late_oracle_regret_mean": float(
-                        self.assignment_late_oracle_regret_sum
-                        / max(late_quality_samples, 1)
                     ),
                 }
             )

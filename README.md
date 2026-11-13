@@ -54,6 +54,8 @@ The ImageNet implementation trains a ResNet-50 encoder, a projection head, and a
 
 The configuration in `imagenet/policies.json` uses a global batch size of 512 on four GPUs, FP32 velocity prediction, and automatic mixed precision for the encoder and projector. The reference contains 4096 centers. `pool_extra_repeats=4` is the extra reference-pool repetition count (M); the number of slots per center is `ceil(batch_size / Kprime) + M`, which is five for this configuration.
 
+The ImageNet experiment uses PyTorch 2.2.1 and torchvision 0.17.1. Install its dependencies with `pip install -r imagenet/requirements.txt` from the repository root.
+
 Set the training and validation manifest paths in `imagenet/paths.json`, then run:
 
 ```bash
