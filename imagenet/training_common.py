@@ -19,7 +19,7 @@ from torchvision import transforms as T
 from imagenet_hdf5.dataset import ImageNetHDF5
 from methods.dm import DM
 from methods.utils import gen_simplex_projection_centers
-from blur_equivalent_20260910 import replace_blur
+from gaussian_blur import replace_blur
 
 
 class TwoViews:

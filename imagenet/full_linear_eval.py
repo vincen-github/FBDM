@@ -96,7 +96,7 @@ def main():
         clf.train()
         order = torch.randperm(len(train_y))
         for indices in order.split(1000):
-            # Unlike the original view(-1,1000), retain ImageNet's final 167 examples.
+            # Retain the final incomplete batch of 167 training examples.
             x, y = train_x[indices].cuda(), train_y[indices].cuda()
             optimizer.zero_grad(set_to_none=True)
             loss = torch.nn.functional.cross_entropy(clf(x),y)

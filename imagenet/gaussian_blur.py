@@ -1,4 +1,4 @@
-"""CPU separable blur: preserve torchvision .14 PIL conversion and RNG draws."""
+"""CPU separable Gaussian blur with torchvision-compatible sampling."""
 import torch
 from torchvision import transforms as T
 from torchvision.transforms import functional as F

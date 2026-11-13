@@ -63,7 +63,7 @@ def get_cfg():
         help=(
             "Optional zero-based schedule for the number of repeated target slots "
             "per center, for example '0:4 100:6 250:9'. Empty preserves the "
-            "historical static target-redundancy/pool-extra-repeats path."
+            "static target-redundancy/pool-extra-repeats setting."
         ),
     )
     parser.add_argument("--target-mode", choices=["shared_point", "shared_center"], default="shared_point")
@@ -164,7 +164,7 @@ def get_cfg():
         default=0.0,
         help=(
             "Exponent gamma for the normalized per-sample flow-matching weight "
-            "(s_dot^2)^gamma. Gamma zero preserves the legacy loss exactly. "
+            "(s_dot^2)^gamma. Gamma zero disables this weighting. "
             "Nonzero values are supported only for path-uniform rational time."
         ),
     )
@@ -185,7 +185,7 @@ def get_cfg():
         default=1.0,
         help=(
             "Scale only the FM-loss gradient entering encoder/head features; "
-            "1 preserves the legacy graph."
+            "1 leaves the encoder gradient unchanged."
         ),
     )
     parser.add_argument("--alignment-space", choices=["z0", "z1"], default="z0")
@@ -284,7 +284,7 @@ def get_cfg():
         help=(
             "Optional zero-based epoch milestones whose multiplicative drops are "
             "applied on top of the cosine learning rate. This reproduces the "
-            "historical cosine-plus-late-step schedule."
+            "cosine-plus-late-step schedule."
         ),
     )
     parser.add_argument("--drop-gamma", type=float, default=0.2)
@@ -353,7 +353,7 @@ def get_cfg():
         type=int,
         choices=[3, 5, 7, 9],
         default=3,
-        help="Odd Gaussian-blur kernel width; three preserves the incumbent.",
+        help="Odd Gaussian-blur kernel width.",
     )
     addf("--solarize-prob", default=0.0)
     parser.add_argument("--solarize-threshold", type=int, default=128)
